@@ -57,6 +57,7 @@ __global__ void bbp(void *in, void *out) {
 }
 
 boolean renderImage();
+int doSome();
 
 GLFWwindow* window;
 GLuint imageGLName;
@@ -83,48 +84,24 @@ int main(void) {
 	glBindTexture(GL_TEXTURE_2D, imageGLName);
 	unsigned int imgSize = imgWidth * imgHeight * 4 * sizeof(uint8_t);
 	glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8, imgWidth, imgHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+	glBindTexture(GL_TEXTURE_2D, 0);
 
 	cuCheckErr(cudaGraphicsGLRegisterImage(&imageCUDAName, imageGLName,
 			cudaGraphicsRegisterFlagsWriteDiscard));
 
-	for (i = 0; i < WORK_SIZE; i++)
-		idata[i] = (unsigned int) i;
-
-	cuCheckErr(cudaMalloc((void**) &hostindata, sizeof(int) * WORK_SIZE));
+	/*cuCheckErr(cudaMalloc((void**) &hostindata, sizeof(int) * WORK_SIZE));
 	cuCheckErr(
-			cudaMemcpy(hostindata, idata, sizeof(int) * WORK_SIZE, cudaMemcpyHostToDevice));
+			cudaMemcpy(hostindata, idata, sizeof(int) * WORK_SIZE, cudaMemcpyHostToDevice));*/
 
-	cuCheckErr(cudaMalloc((void**) &hostoutdata, sizeof(double) * WORK_SIZE));
 
 	bbp<<<1, WORK_SIZE>>>(hostindata,hostoutdata);
 
 	cuCheckErr(cudaThreadSynchronize());	// Wait for the GPU launched work to complete
 	cuCheckErr(cudaGetLastError());
-	cuCheckErr(cudaMemcpy(odata, hostoutdata, sizeof(double) * WORK_SIZE, cudaMemcpyDeviceToHost));
-	cuCheckErr(cudaMemcpy(idata, hostindata, sizeof(int) * WORK_SIZE, cudaMemcpyDeviceToHost));
+
 
 	cout << "summing up" << endl;
 
-	double sum = 0;
-	for (i = 0; i < WORK_SIZE; i++)
-		sum += odata[i];
-
-	string calcpi = boost::str(boost::format("%1.100f") % sum);
-
-	string realpi = "3.1415926535897932384626433832795028841971693993751058209749445923078164062862089986280348253421170679";
-	int len = realpi.length();
-	int len2 = calcpi.length();
-	int signif = -1;
-
-	for(i=0; i<len && i<len2; i++) {
-		if(realpi[i] != calcpi[i]) {
-			signif = i;
-			i = len;
-		}
-	}
-
-	cout << "significant numbers: "<< signif << endl <<
-			"pi is approx. "<< format("%1.50f") % sum << endl;
 	cuCheckErr(cudaFree((void*) hostoutdata));
 	cuCheckErr(cudaFree((void*) hostindata));
 	cuCheckErr(cudaDeviceReset());
@@ -132,7 +109,38 @@ int main(void) {
 	return 0;
 }
 
+int doSome() {
+	//TODO file:///usr/local/cuda-5.5/doc/html/cuda-c-programming-guide/index.html#opengl-interoperability
+
+	cudaGraphicsMapResources(1, &imageCUDAName, 0);
+	uint8_t* dataPtr;
+	size_t dataLen;
+	cudaGraphicsResourceGetMappedPointer(&dataPtr, &dataLen, imageCUDAName);
+
+	// do CUDA work
+
+	// unmap
+	cudaGraphicsUnmapResources(1, &imageCUDAName, 0);
+
+	// render
+	renderImage();
+}
+
 boolean renderImage() {
+
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	glBindTexture(GL_TEXTURE_2D, imageGLName);
+	glBegin(GL_QUADS);
+	glTexCoord2f(0.0f, 0.0f);
+	glVertex2f(0.0f, 0.0f);
+	glTexCoord2f(1.0f, 0.0f);
+	glVertex2f(1.0f, 0.0f);
+	glTexCoord2f(1.0f, 1.0f);
+	glVertex2f(1.0f, 1.0f);
+	glTexCoord2f(0.0f, 1.0f);
+	glVertex2f(0.0f, 1.0f);
+	glEnd();
+	glBindTexture(GL_TEXTURE_2D, 0);
 
 	glfwSwapBuffers(window);
 	glfwPollEvents();
