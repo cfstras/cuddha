@@ -1,0 +1,4 @@
+*.o
+*.a
+Debug/src/
+Debug/cuddha
