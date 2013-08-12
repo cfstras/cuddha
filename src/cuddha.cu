@@ -2,27 +2,17 @@
 #include <sstream>
 #include <boost/format.hpp>
 
-#ifdef _WIN32
-#  define WINDOWS_LEAN_AND_MEAN
-#  define NOMINMAX
-#  include <windows.h>
-#endif
+#include <cuda.h>
+#include <cuda_runtime.h>
 
-// OpenGL Graphics includes
 #include <GL/glew.h>
-#if defined (__APPLE__) || defined(MACOSX)
-#include <GLUT/glut.h>
-#else
-#include <GL/freeglut.h>
-#endif
+#include <cuda_gl_interop.h>
 
 #include <GLFW/glfw3.h>
 
 using namespace std;
 using namespace boost;
 
-
-static const int WORK_SIZE = 256;
 static const int imgWidth = 800;
 static const int imgHeight = 600;
 
@@ -38,26 +28,24 @@ static const int imgHeight = 600;
 		exit(1);															\
 	} }
 
-__device__ double bbp(unsigned int k) {
-	double s = 4 / (double)(8*k+1);
-	s -= 2 / (double)(8*k+4);
-	s -= 1 / (double)(8*k+5);
-	s -= 1 / (double)(8*k+6);
-	s /= (double)(powf(16,k));
-	return s;
+__device__ float function(/*args*/) {
+	return 0;
 }
 
-/**
- * CUDA kernel function that reverses the order of bits in each element of the array.
- */
-__global__ void bbp(void *in, void *out) {
-	unsigned int *indata = (unsigned int*) in;
-	double *outdata = (double*) out;
-	outdata[threadIdx.x] = bbp(indata[threadIdx.x]);
+__global__ void cuBrot(uint8_t* dataPtr) {
+	//threadIdx.xyz
+	dataPtr[(threadIdx.x + threadIdx.y * imgWidth) * 4 + 0] /*Red*/   = (uint8_t)((float)threadIdx.x / imgWidth * 255);
+	dataPtr[(threadIdx.x + threadIdx.y * imgWidth) * 4 + 1] /*Green*/ = (uint8_t)((float)threadIdx.y / imgHeight * 255);
+	dataPtr[(threadIdx.x + threadIdx.y * imgWidth) * 4 + 2] /*Blue*/  = 0;
+	dataPtr[(threadIdx.x + threadIdx.y * imgWidth) * 4 + 3] /*Alpha*/ = 255;
 }
 
-boolean renderImage();
+bool renderImage();
 int doSome();
+void glfwError(int error, const char* description);
+void freeStuff();
+void destroyStuff();
+
 
 GLFWwindow* window;
 GLuint imageGLName;
@@ -69,8 +57,9 @@ cudaGraphicsResource* imageCUDAName;
 int main(void) {
 
 	//init OGL
-
-	if(!glfwInint()) return -1;
+	if(!glewInit()) return -1;
+	if(!glfwInit()) return -1;
+	glfwSetErrorCallback(glfwError);
 
 	window = glfwCreateWindow(imgWidth, imgHeight, "Cuddha", NULL, NULL);
 	if(!window) {
@@ -82,28 +71,19 @@ int main(void) {
 	cudaGLSetGLDevice(0);
 	glGenTextures(1,&imageGLName);
 	glBindTexture(GL_TEXTURE_2D, imageGLName);
-	unsigned int imgSize = imgWidth * imgHeight * 4 * sizeof(uint8_t);
+	//unsigned int imgSize = imgWidth * imgHeight * 4 * sizeof(uint8_t);
 	glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8, imgWidth, imgHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
 	glBindTexture(GL_TEXTURE_2D, 0);
 
-	cuCheckErr(cudaGraphicsGLRegisterImage(&imageCUDAName, imageGLName,
+	cuCheckErr(cudaGraphicsGLRegisterImage(&imageCUDAName, imageGLName, GL_TEXTURE_2D,
 			cudaGraphicsRegisterFlagsWriteDiscard));
 
 	/*cuCheckErr(cudaMalloc((void**) &hostindata, sizeof(int) * WORK_SIZE));
 	cuCheckErr(
 			cudaMemcpy(hostindata, idata, sizeof(int) * WORK_SIZE, cudaMemcpyHostToDevice));*/
 
+	for (int numDone = 0; numDone != -1; numDone = doSome());
 
-	bbp<<<1, WORK_SIZE>>>(hostindata,hostoutdata);
-
-	cuCheckErr(cudaThreadSynchronize());	// Wait for the GPU launched work to complete
-	cuCheckErr(cudaGetLastError());
-
-
-	cout << "summing up" << endl;
-
-	cuCheckErr(cudaFree((void*) hostoutdata));
-	cuCheckErr(cudaFree((void*) hostindata));
 	cuCheckErr(cudaDeviceReset());
 
 	return 0;
@@ -113,20 +93,38 @@ int doSome() {
 	//TODO file:///usr/local/cuda-5.5/doc/html/cuda-c-programming-guide/index.html#opengl-interoperability
 
 	cudaGraphicsMapResources(1, &imageCUDAName, 0);
-	uint8_t* dataPtr;
+	void* dataPtr;
 	size_t dataLen;
 	cudaGraphicsResourceGetMappedPointer(&dataPtr, &dataLen, imageCUDAName);
 
+	if(dataLen != (imgWidth*imgHeight*4/*RGBA*/*sizeof(char))) {
+		cerr << "Error: data length expected " << (imgWidth*imgHeight*1*sizeof(char)) << ", got " << dataLen << endl;
+		return -1;
+	}
+
+	int workDone = 0;
+
 	// do CUDA work
+	cuBrot<<<1, dim3(imgWidth, imgHeight, 1)>>>((uint8_t*)dataPtr);
+	workDone++;
+
+	cuCheckErr(cudaThreadSynchronize());	// Wait for the GPU launched work to complete
+	cuCheckErr(cudaGetLastError());
 
 	// unmap
 	cudaGraphicsUnmapResources(1, &imageCUDAName, 0);
 
 	// render
-	renderImage();
+	if(!renderImage()) {
+		//TODO save?
+		freeStuff();
+		destroyStuff();
+		return -1;
+	}
+	return workDone;
 }
 
-boolean renderImage() {
+bool renderImage() {
 
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	glBindTexture(GL_TEXTURE_2D, imageGLName);
@@ -146,3 +144,17 @@ boolean renderImage() {
 	glfwPollEvents();
 	return !glfwWindowShouldClose(window);
 }
+
+void glfwError(int error, const char* description) {
+    cerr << "GLFW Error " << error << description << endl;
+}
+
+void freeStuff() {
+	cudaGraphicsUnregisterResource(imageCUDAName);
+	glDeleteTextures(1,&imageGLName);
+}
+
+void destroyStuff() {
+	glfwTerminate();
+}
+
