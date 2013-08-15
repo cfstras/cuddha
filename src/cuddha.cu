@@ -86,18 +86,29 @@ __global__ void cuBrot(uint64_t* exposure, const int maxIterations) {
 		xx = x * x;
 		out = xx+yy < T(4);
 	}
-	if(!out) {
-		unsigned int basePos = (unsigned int)(xInd * imgWidth + yInd * imgWidth * imgHeight);
+	if(out) {
 		for(int i=0;i < maxIterations; i++) {
 			y = x * y * T(2.0) + yC;
 			x = xx - yy + xC ;
 			yy = y * y;
 			xx = x * x;
 
-			/*unsigned long long expNow = exposure[basePos], expWanted = expNow+1, expOld;
+			double ix = 0.3 * (x+0.5) + (double)imgWidth / 2;
+			double iy = 0.3 * y + (double)imgHeight / 2;
+			unsigned int basePos = (unsigned int)(ix * imgWidth + iy * imgWidth * imgHeight);
+			if(basePos > imgSize) {
+				printf("dropping %d\n", basePos);
+				continue;
+			}
+			unsigned long long expNow = exposure[basePos], expWanted = expNow+1, expOld;
+			int c = 0;
 			do {
+				c++; if(c>10) {
+					printf("dropping %d\n", basePos);
+					break;
+				}
 				expOld = atomicCAS((unsigned long long*)&exposure[basePos], expNow, expWanted);
-			} while (expOld != expNow);*/
+			} while (expOld != expNow);
 		}
 	}
 }
@@ -368,10 +379,10 @@ int main(void) {
 	cuCheckErr(cudaThreadSynchronize());
 	cuCheckErr(cudaGetLastError());
 
+	sync();
 	cout << "beginning..." << endl;
 	for (int numDone = 0; numDone != -1;) {
 		numDone = doSome();
-		//break;
 	}
 
 	cuCheckErr(cudaDeviceReset());
@@ -385,21 +396,26 @@ int doSome() {
 
 	//TODO
 	// Step 1: do some Broting
+	cout << "Broting..." << endl;
 	dim3 dimBlockBrot(32, 32);
 	dim3 dimGridBrot(1,1);
 	cuBrot<double><<<dimGridBrot, dimBlockBrot>>>(exposures, 200);
 	cuCheckErr(cudaThreadSynchronize());
 	cuCheckErr(cudaGetLastError());
 
+
 	// Step 2: get Min/Max values of broted stuff
+	cout << "minmax..." << endl;
 	cuCheckErr(cudaMemcpy(exposuresRAM, exposures, sizeof(uint64_t) * imgSize, cudaMemcpyDeviceToHost));
 	uint64_t maxExp = 0, minExp = -1;
 	for(unsigned int i = 0; i < imgSize; i++) {
 		if(exposuresRAM[i] > maxExp) maxExp = exposuresRAM[i];
 		if(exposuresRAM[i] < minExp) minExp = exposuresRAM[i];
 	}
+	cout << "min=" << minExp << " max=" << maxExp << endl;
 
 	// Step 3: convert to Image
+	cout << "convert..." << endl;
 	size_t dataLen;
 	void* dataPtr;
 	cuCheckErr(cudaGraphicsMapResources(1, &imageCUDAName, 0));
@@ -412,7 +428,7 @@ int doSome() {
 	int n = imgWidth * imgHeight;
 	int dimBlock(1024);
 	dim3 dimGrid(n/dimBlock);
-	cout << "dimGrid: " << out(dimGrid) << " dimBlock: " << dimBlock << endl;
+	//cout << "dimGrid: " << out(dimGrid) << " dimBlock: " << dimBlock << endl;
 	cuConvertImage<<<dimGrid, dimBlock>>>((GLubyte*)dataPtr, (int)(dataLen/sizeof(GLubyte)), exposures, maxExp, minExp);
 	workDone++;
 
