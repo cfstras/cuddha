@@ -61,30 +61,72 @@ static inline void glCheck() {
 	}
 }
 
+template<class T>
+__global__ void cuBrot(uint64_t* exposure, const int maxIterations) {
+
+	// [0,1]
+	double xInd = (threadIdx.x + blockDim.x * blockIdx.x) / (double)(blockDim.x * gridDim.x);
+	double yInd = (threadIdx.y + blockDim.y * blockIdx.y) / (double)(blockDim.y * gridDim.y);
+
+	T x, y, xx, yy, xC, yC;
+
+
+	xC = xInd*6 - 3;  // range -2.0, 1.0 //old, now both -3,3
+    yC = yInd*6 - 3;  // range -1.5, 1.5
+	y = 0;
+	x = 0;
+	yy = 0; // x0 & y0 = 0, so xx0 = 0, too
+	xx = 0;
+
+	bool out = false;
+	for(int i=0;i < maxIterations && !out; i++) {
+		y = x * y * T(2.0) + yC;
+		x = xx - yy + xC ;
+		yy = y * y;
+		xx = x * x;
+		out = xx+yy < T(4);
+	}
+	if(!out) {
+		unsigned int basePos = (unsigned int)(xInd * imgWidth + yInd * imgWidth * imgHeight);
+		for(int i=0;i < maxIterations; i++) {
+			y = x * y * T(2.0) + yC;
+			x = xx - yy + xC ;
+			yy = y * y;
+			xx = x * x;
+
+			/*unsigned long long expNow = exposure[basePos], expWanted = expNow+1, expOld;
+			do {
+				expOld = atomicCAS((unsigned long long*)&exposure[basePos], expNow, expWanted);
+			} while (expOld != expNow);*/
+		}
+	}
+}
+
 __device__ float function(/*args*/) {
 	return 0;
 }
 
-__global__ void cuBrot(GLubyte* data, int len) {
-	long int idx = threadIdx.x + blockDim.x * blockIdx.x;
+__global__ void cuConvertImage(GLubyte* outImage, int len, uint64_t* exposure, uint64_t maxExp, uint64_t minExp) {
+	uint32_t idx = threadIdx.x + blockDim.x * blockIdx.x;
 
-	long int x = idx % imgWidth;
-	long int y = idx / imgWidth;
+	uint32_t x = idx % imgWidth;
+	uint32_t y = idx / imgWidth;
 
-	//printf("%4ld x=%4ld y=%4ld\n",idx, x, y);
-
-	int basePos = (x+y*imgWidth)*4;
-	if(basePos+4 > len) {
-		printf("x=%d, y=%d Error: usedlen %4d > len %4d\n", x,y, basePos, len);
+	int basePos = (x+y*imgWidth);
+	if(basePos*4+4 > len) {
+		printf("x=%d, y=%d Error: usedlen %4d > len %4d\n", x,y, basePos*4, len);
 		return;
-	}/* else {
-		printf("x=%d, y=%d usedlen %4d, len %4d\n", x,y, usedLen, len);
-	}*/
+	}
 
-	data[(basePos) + 0] = (uint8_t)((float)x / imgWidth * 255);
-	data[(basePos) + 1] = (uint8_t)((float)y / imgHeight * 255);
-	data[(basePos) + 2] = 0;
-	data[(basePos) + 3] = 255;
+	uint64_t exp = exposure[basePos];
+	exp -= minExp;
+	float expF = exp / (float)(maxExp - minExp);
+	expF = __log10f(expF);
+
+	outImage[(basePos*4) + 0] = (uint8_t)(expF);
+	outImage[(basePos*4) + 1] = (uint8_t)(expF);
+	outImage[(basePos*4) + 2] = (uint8_t)(expF);
+	outImage[(basePos*4) + 3] = 255;
 }
 
 #define GLSL(version, shader)  "#version " #version "\n" #shader
@@ -189,6 +231,8 @@ GLuint vertShader, fragShader, shaderProg;
 GLuint sImageUnif, sImageSizeUnif;
 GLuint quad_vertexbuffer;
 cudaGraphicsResource* imageCUDAName;
+uint64_t* exposures;
+uint64_t* exposuresRAM;
 
 double timeNow = 0;
 double targetFPS = 0.5;
@@ -316,9 +360,14 @@ int main(void) {
 	cuCheckErr(cudaGraphicsGLRegisterBuffer(&imageCUDAName, imageGLName, cudaGraphicsRegisterFlagsWriteDiscard));
 	glBindBuffer(GL_ARRAY_BUFFER, 0); glCheck();
 
-	/*cuCheckErr(cudaMalloc((void**) &hostindata, sizeof(int) * WORK_SIZE));
-	cuCheckErr(
-			cudaMemcpy(hostindata, idata, sizeof(int) * WORK_SIZE, cudaMemcpyHostToDevice));*/
+	cout << "cudaMalloc "<< (sizeof(uint64_t) * imgSize / 1024) << "KB" << endl;
+	cuCheckErr(cudaMalloc((void**) &exposures, sizeof(uint64_t) * imgSize));
+	cout << "malloc" << endl;
+	exposuresRAM = new uint64_t[imgSize];
+
+	cuCheckErr(cudaThreadSynchronize());
+	cuCheckErr(cudaGetLastError());
+
 	cout << "beginning..." << endl;
 	for (int numDone = 0; numDone != -1;) {
 		numDone = doSome();
@@ -332,8 +381,25 @@ int main(void) {
 }
 
 int doSome() {
-	//TODO file:///usr/local/cuda-5.5/doc/html/cuda-c-programming-guide/index.html#opengl-interoperability
+	int workDone = 0;
 
+	//TODO
+	// Step 1: do some Broting
+	dim3 dimBlockBrot(32, 32);
+	dim3 dimGridBrot(1,1);
+	cuBrot<double><<<dimGridBrot, dimBlockBrot>>>(exposures, 200);
+	cuCheckErr(cudaThreadSynchronize());
+	cuCheckErr(cudaGetLastError());
+
+	// Step 2: get Min/Max values of broted stuff
+	cuCheckErr(cudaMemcpy(exposuresRAM, exposures, sizeof(uint64_t) * imgSize, cudaMemcpyDeviceToHost));
+	uint64_t maxExp = 0, minExp = -1;
+	for(unsigned int i = 0; i < imgSize; i++) {
+		if(exposuresRAM[i] > maxExp) maxExp = exposuresRAM[i];
+		if(exposuresRAM[i] < minExp) minExp = exposuresRAM[i];
+	}
+
+	// Step 3: convert to Image
 	size_t dataLen;
 	void* dataPtr;
 	cuCheckErr(cudaGraphicsMapResources(1, &imageCUDAName, 0));
@@ -343,16 +409,11 @@ int doSome() {
 		cerr << "Error: data length expected " << (imgWidth*imgHeight*1*sizeof(GLubyte)) << ", got " << dataLen << endl;
 		return -1;
 	}
-
-	int workDone = 0;
-
-	// do CUDA work
-
 	int n = imgWidth * imgHeight;
 	int dimBlock(1024);
 	dim3 dimGrid(n/dimBlock);
 	cout << "dimGrid: " << out(dimGrid) << " dimBlock: " << dimBlock << endl;
-	cuBrot<<<dimGrid, dimBlock>>>((GLubyte*)dataPtr, (int)(dataLen/sizeof(GLubyte)));
+	cuConvertImage<<<dimGrid, dimBlock>>>((GLubyte*)dataPtr, (int)(dataLen/sizeof(GLubyte)), exposures, maxExp, minExp);
 	workDone++;
 
 	cuCheckErr(cudaThreadSynchronize());	// Wait for the GPU launched work to complete
@@ -428,6 +489,8 @@ void glfwError(int error, const char* description) {
 
 void freeStuff() {
 	cout << "freeing mems..." << endl;
+	delete[] exposuresRAM;
+	cudaFree(exposures);
 	cudaGraphicsUnregisterResource(imageCUDAName);
 	glDeleteBuffers(1, &imageGLName);
 	glDeleteTextures(1, &bufferTexture);
