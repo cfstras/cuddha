@@ -31,8 +31,9 @@ inline void sleep(int usecs) {
 using namespace std;
 using namespace boost;
 
-static const int imgWidth = 64;
-static const int imgHeight = 64;
+static const int imgWidth = 512;
+static const int imgHeight = 512;
+static const int imgSize = imgWidth * imgHeight;
 
 #define out(dim) "[x="<<dim.x<<",y="<<dim.y<<",z="<<dim.z<<"]"
 
@@ -65,21 +66,25 @@ __device__ float function(/*args*/) {
 }
 
 __global__ void cuBrot(GLubyte* data, int len) {
-	int x = blockIdx.x * blockDim.x + threadIdx.x;
-	int y = blockIdx.y * blockDim.y + threadIdx.y;
+	long int idx = threadIdx.x + blockDim.x * blockIdx.x;
 
-	int usedLen = (x+y*imgWidth)*4+3;
-	if(usedLen > len) {
-		printf("x=%d, y=%d Error: usedlen %4d > len %4d\n", x,y, usedLen, len);
+	long int x = idx % imgWidth;
+	long int y = idx / imgWidth;
+
+	//printf("%4ld x=%4ld y=%4ld\n",idx, x, y);
+
+	int basePos = (x+y*imgWidth)*4;
+	if(basePos+4 > len) {
+		printf("x=%d, y=%d Error: usedlen %4d > len %4d\n", x,y, basePos, len);
 		return;
 	}/* else {
 		printf("x=%d, y=%d usedlen %4d, len %4d\n", x,y, usedLen, len);
 	}*/
 
-	data[(x + y * imgWidth) * 4 + 0] = (uint8_t)((float)x / imgWidth * 255);
-	data[(x + y * imgWidth) * 4 + 1] = (uint8_t)((float)y / imgHeight * 255);
-	data[(x + y * imgWidth) * 4 + 2] = 0;
-	data[(x + y * imgWidth) * 4 + 3] = 255;
+	data[(basePos) + 0] = (uint8_t)((float)x / imgWidth * 255);
+	data[(basePos) + 1] = (uint8_t)((float)y / imgHeight * 255);
+	data[(basePos) + 2] = 0;
+	data[(basePos) + 3] = 255;
 }
 
 #define GLSL(version, shader)  "#version " #version "\n" #shader
@@ -105,10 +110,12 @@ static const GLchar* fragShaderSrc = GLSL(430 core,
 	out vec4 col;
 
 	void main() {
-		//col = vec4(1,0,0,1);
-		col = vec4(texV,0, 1);
-		//int p = texV.x + texV.y * imageSize.x;
-		//col = texelFetch(image,p);
+		//col = vec4(imageSize.xy/float(1024),0,1);
+		//col = vec4(texV,0, 1);
+		ivec2 texVP = ivec2(texV * imageSize);
+		int p = (texVP.x + texVP.y * imageSize.x);
+		//col = vec4(0, p/float(512*512), 0, 1);
+		col = texelFetch(image,p);
 	}
 );
 
@@ -313,8 +320,9 @@ int main(void) {
 	cuCheckErr(
 			cudaMemcpy(hostindata, idata, sizeof(int) * WORK_SIZE, cudaMemcpyHostToDevice));*/
 	cout << "beginning..." << endl;
-	for (int numDone = 0; numDone != -1; numDone = doSome()) {
-		sync();
+	for (int numDone = 0; numDone != -1;) {
+		numDone = doSome();
+		//break;
 	}
 
 	cuCheckErr(cudaDeviceReset());
@@ -340,10 +348,10 @@ int doSome() {
 
 	// do CUDA work
 
-	dim3 dimBlock(16,16);
-	dim3 dimGrid((imgWidth  + dimBlock.x - 1) / dimBlock.x,
-			(imgHeight + dimBlock.y - 1) / dimBlock.y);
-	cout << "dimGrid: " << out(dimGrid) << " dimBlock: " << out(dimBlock) << endl;
+	int n = imgWidth * imgHeight;
+	int dimBlock(1024);
+	dim3 dimGrid(n/dimBlock);
+	cout << "dimGrid: " << out(dimGrid) << " dimBlock: " << dimBlock << endl;
 	cuBrot<<<dimGrid, dimBlock>>>((GLubyte*)dataPtr, (int)(dataLen/sizeof(GLubyte)));
 	workDone++;
 
@@ -361,6 +369,7 @@ int doSome() {
 		destroyStuff();
 		return -1;
 	}
+	sync();
 	return workDone;
 }
 
