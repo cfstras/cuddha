@@ -1,4 +1,3 @@
-*.o
-*.a
-Debug/src/
+Debug/*.o
+Debug/*.d
 Debug/cuddha
