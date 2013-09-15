@@ -134,7 +134,6 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations) {
 				int iy = (int)(imgHeight * ((y + 1.5) / 3.0));
 
 				if(ix >= imgWidth || iy >= imgHeight || ix < 0 || iy < 0) {
-					//printf("dropping %3.4f, %3.4f\n", ix, iy);
 					return;//continue;
 				}
 				int basePos = iy + ix * imgWidth; // swap x&y
