@@ -28,17 +28,20 @@
 							<builder buildPath="${workspace_loc:/cuddha}/Debug" id="com.nvidia.cuda.ide.builder.1640557670" keepEnvironmentInBuildfile="false" managedBuildOn="true" name="CUDA Toolkit 5.5 Builder" superClass="com.nvidia.cuda.ide.builder"/>
 							<tool command="${cuda_bin}nvcc" commandLinePattern="${COMMAND} ${FLAGS} ${OUTPUT_FLAG} ${OUTPUT_PREFIX} ${OUTPUT} ${INPUTS}" id="nvcc.compiler.base.1017668978" name="NVCC Compiler" superClass="nvcc.compiler.base">
 								<option id="nvcc.compiler.deviceDebug.691977557" name="Generate device debug information (-G)" superClass="nvcc.compiler.deviceDebug" value="false" valueType="boolean"/>
-								<option id="nvcc.compiler.option.level.1014344261" name="Generate host debug information (-g)" superClass="nvcc.compiler.option.level" value="true" valueType="boolean"/>
+								<option id="nvcc.compiler.option.level.1014344261" name="Generate host debug information (-g)" superClass="nvcc.compiler.option.level" value="false" valueType="boolean"/>
 								<option defaultValue="nvcc.compiler.optimization.level.none" id="nvcc.compiler.optimization.level.1485629449" name="Optimization Level" superClass="nvcc.compiler.optimization.level" value="nvcc.compiler.optimization.level.most" valueType="enumerated"/>
 								<option id="nvcc.compiler.pic.61742239" name="Position Independent Code (-fPIC)" superClass="nvcc.compiler.pic"/>
-								<option id="nvcc.compiler.disableWarnings.239844881" name="Inhibit all warning messages (-w)" superClass="nvcc.compiler.disableWarnings" value="false" valueType="boolean"/>
+								<option id="nvcc.compiler.disableWarnings.239844881" name="Inhibit all warning messages (-w)" superClass="nvcc.compiler.disableWarnings" value="true" valueType="boolean"/>
 								<option id="nvcc.compiler.compileroptions.129466888" name="Preprocessor options (-Xcompiler)" superClass="nvcc.compiler.compileroptions" valueType="stringList">
 									<listOptionValue builtIn="false" value="-Wall"/>
 								</option>
 								<option id="nvcc.compiler.openccoptions.344214478" name="nvopencc options (-Xopencc)" superClass="nvcc.compiler.openccoptions"/>
 								<option id="nvcc.compiler.cudafeoptions.1610531462" name="cudafe options (-Xcudafe)" superClass="nvcc.compiler.cudafeoptions"/>
 								<option id="nvcc.compiler.ptxasoptions.20513422" name="ptaxas options (-Xptxas)" superClass="nvcc.compiler.ptxasoptions"/>
-								<option id="nvcc.compiler.usefastmath.7060068" name="Make use of fast math library (-use_fast_math)" superClass="nvcc.compiler.usefastmath" value="true" valueType="boolean"/>
+								<option id="nvcc.compiler.usefastmath.7060068" name="Make use of fast math library (-use_fast_math)" superClass="nvcc.compiler.usefastmath" value="false" valueType="boolean"/>
+								<option id="nvcc.compiler.machine.429282786" superClass="nvcc.compiler.machine" value="nvcc.compiler.machine64" valueType="enumerated"/>
+								<option id="nvcc.compiler.option.lineinfo.1049744287" superClass="nvcc.compiler.option.lineinfo" value="false" valueType="boolean"/>
+								<option id="nvcc.compiler.option.gprof.1461476822" superClass="nvcc.compiler.option.gprof" value="false" valueType="boolean"/>
 								<inputType id="nvcc.compiler.input.cu.205594399" superClass="nvcc.compiler.input.cu"/>
 								<inputType id="nvcc.compiler.input.cpp.1055986198" superClass="nvcc.compiler.input.cpp"/>
 								<inputType id="nvcc.compiler.input.c.755974127" superClass="nvcc.compiler.input.c"/>

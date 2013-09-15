@@ -24,16 +24,16 @@ C_DEPS += \
 src/%.o: ../src/%.c
 	@echo 'Building file: $<'
 	@echo 'Invoking: NVCC Compiler'
-	/usr/local/cuda-5.5/bin/nvcc -g -O3 --use_fast_math -Xcompiler -Wall -gencode arch=compute_30,code=sm_30 -odir "src" -M -o "$(@:%.o=%.d)" "$<"
-	/usr/local/cuda-5.5/bin/nvcc -g -O3 --use_fast_math -Xcompiler -Wall --compile  -x c -o  "$@" "$<"
+	/usr/local/cuda-5.5/bin/nvcc -O3 -m64 -w -Xcompiler -Wall -gencode arch=compute_30,code=sm_30 -odir "src" -M -o "$(@:%.o=%.d)" "$<"
+	/usr/local/cuda-5.5/bin/nvcc -O3 -m64 -w -Xcompiler -Wall --compile  -x c -o  "$@" "$<"
 	@echo 'Finished building: $<'
 	@echo ' '
 
 src/%.o: ../src/%.cu
 	@echo 'Building file: $<'
 	@echo 'Invoking: NVCC Compiler'
-	/usr/local/cuda-5.5/bin/nvcc -g -O3 --use_fast_math -Xcompiler -Wall -gencode arch=compute_30,code=sm_30 -odir "src" -M -o "$(@:%.o=%.d)" "$<"
-	/usr/local/cuda-5.5/bin/nvcc --compile --use_fast_math -O3 -Xcompiler -Wall -g -gencode arch=compute_30,code=compute_30 -gencode arch=compute_30,code=sm_30  -x cu -o  "$@" "$<"
+	/usr/local/cuda-5.5/bin/nvcc -O3 -m64 -w -Xcompiler -Wall -gencode arch=compute_30,code=sm_30 -odir "src" -M -o "$(@:%.o=%.d)" "$<"
+	/usr/local/cuda-5.5/bin/nvcc --compile -O3 -Xcompiler -Wall -gencode arch=compute_30,code=compute_30 -gencode arch=compute_30,code=sm_30 -m64 -w  -x cu -o  "$@" "$<"
 	@echo 'Finished building: $<'
 	@echo ' '
 

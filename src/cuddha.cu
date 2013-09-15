@@ -39,13 +39,16 @@ using namespace boost;
 
 static const int imgWidth = 1024;
 static const int imgHeight = 1024;
-static const int maxIterations = 15;
-static const int minDrawIterations = 3;
+static const int maxIterations = 10*1;
+static const int minDrawIterations = 1;
 static const int imgSize = imgWidth * imgHeight;
-static const int XYRES = 32;
-static const int XYRESMULT = 8;
 
-static const int nums[] = {1,2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,
+// total job number: XYRES*XYRES*XYRESMULT*XYRESMULT
+// job resolution: XYRES*XYRESMULT
+static int XYRES = 32;
+static int XYRESMULT = 32;
+
+static const int nums[] = {2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,
 59,61,67,71,73,79,83,89,97,101,103,107,109,113,127,131,137,139,149,151,157,163,
 167,173,179,181,191,193,197,199,211,223,227,229,233,239,241,251,257,263,269,271,
 277,281,283,293,307,311,313,317,331,337,347,349,353,359,367,373,379,383,389,397,
@@ -57,7 +60,7 @@ static const int nums[] = {1,2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,
 1051,1061,1063,1069,1087,1091,1093,1097,1103,1109,1117,1123,1129,1151,1153,1163,
 1171,1181,1187,1193,1201,1213,1217,1223,1229,1231,1237,1249,1259,1277,1279,1283,
 1289,1291}; // hurr durr
-const std::vector<int> prime_numbers(nums, nums + 211);
+const std::vector<int> prime_numbers(nums, nums + 210);
 
 #define out(dim) "[x="<<dim.x<<",y="<<dim.y<<",z="<<dim.z<<"]"
 #define UINT64_MAX ((uint64_t)(1) << 63)
@@ -103,6 +106,7 @@ __device__ uint64_t atomicAdd(uint64_t* address, uint64_t val)
     return old;
 }
 
+#pragma unroll
 template<class T>
 __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, uint primePosX, uint primePosY) {
 
@@ -110,10 +114,10 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
 	double xInd = (threadIdx.x + blockDim.x * blockIdx.x) / (double)(blockDim.x * gridDim.x);
 	double yInd = (threadIdx.y + blockDim.y * blockIdx.y) / (double)(blockDim.y * gridDim.y);
 
-	T x, y, xx, yy, xC, yC;
+	T x, y, xx, yy, xC, yC, xCn, yCn, xDiff, yDiff;
 
-	//xC = xInd*6 - 3;  // range -2.0, 1.0 //old, now both -3,3
-    //yC = yInd*6 - 3;  // range -1.5, 1.5
+	//xC = xInd * 6 - 3.0;  // range -2.0, 1.0 //old, now both -3,3
+    //yC = yInd * 6 - 3.0;  // range -1.5, 1.5
 
 	xC = xInd * 3 - 2;
 	yC = yInd * 3 - 1.5;
@@ -122,10 +126,10 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
 
 	//TODO performance hint: for found orbit, mirror on x axis and try again
 
-	T xCn = (xInd+1) * 3 - 2;
-	T yCn = (yInd+1) * 3 - 1.5;
-	T xDiff = xCn - xC;
-	T yDiff = yCn - yC;
+	xCn = (xInd+1) * 3 - 2;
+	yCn = (yInd+1) * 3 - 1.5;
+	xDiff = xCn - xC;
+	yDiff = yCn - yC;
 
 	xC += ( primePosX / (float)currPrime ) * xDiff;
 	yC += ( primePosY / (float)currPrime ) * yDiff;
@@ -146,32 +150,27 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
                         ) return;
 #endif
 
-	y = 0;
-	x = 0;
-	yy = 0; // x0 & y0 = 0, so xx0 = 0, too
-	xx = 0;
+	y = x = yy = xx = 0;
+	// x0 & y0 = 0, so xx0 = 0, too
 
 	bool out = false;
 	int i;
-	for(i=0;i < maxIterations && !out; i++) {
+	for(i=1;i <= maxIterations && !out; i++) {
 		y = x * y * T(2.0) + yC;
 		x = xx - yy + xC ;
 		yy = y * y;
 		xx = x * x;
 		out = xx+yy > T(4);
 	}
-	maxIterations = i+1; // only go up there
+	maxIterations = i; // only go up there
 	if(out) {
-		y = 0;
-		x = 0;
-		yy = 0; // x0 & y0 = 0, so xx0 = 0, too
-		xx = 0;
-		for(int i=0;i < maxIterations; i++) {
+		y = x = yy = xx = 0;
+		for(int i=1;i <= maxIterations; i++) {
 			y = x * y * T(2.0) + yC;
 			x = xx - yy + xC ;
 			yy = y * y;
 			xx = x * x;
-			if (i > minDrawIterations) {
+			if (i >= minDrawIterations) {
 				//double ix = 0.3 * (x+0.5) + (double)imgWidth / 2;
 				//double iy = 0.3 * y + (double)imgHeight / 2;
 				int ix = (int)(imgWidth  * ((x + 2.0) / 3.0));
@@ -527,19 +526,22 @@ int64_t doSome() {
 
 	// map primePos as primePosX&primePosY to a position in (x,y)
 	// where x&y are smaller than prime_numbers[currPrimeInd]
-	int prime = prime_numbers[currPrimeInd];
-	primePos++;
-	if (primePos >= (uint)(prime*prime)) {
-		currPrimeInd++;
-		if (currPrimeInd >= prime_numbers.size()) {
-			bmp_quicksave(maxExp);
-			return -1;
-		}
-		primePos = 0;
+	int prime, primePosX, primePosY;
+	do {
 		prime = prime_numbers[currPrimeInd];
-	}
-	int primePosX = primePos % prime;
-	int primePosY = primePos / prime;
+		primePos++;
+		if (primePos >= (uint)(prime*prime)) {
+			currPrimeInd++;
+			if (currPrimeInd >= prime_numbers.size()) {
+				bmp_quicksave(maxExp);
+				return -1;
+			}
+			primePos = 0;
+			prime = prime_numbers[currPrimeInd];
+		}
+		primePosX = primePos % prime;
+		primePosY = primePos / prime;
+	} while (primePosX == 0 || primePosY == 0); // don't iterate the edges
 
 	cout << "Broting prime: "<<prime << " pos " << primePos << " x " << primePosX << " y " << primePosY << endl;
 	dim3 dimBlockBrot(XYRES, XYRES);
@@ -559,8 +561,11 @@ int64_t doSome() {
 		if(exposuresRAM[i] > maxExp) maxExp = exposuresRAM[i];
 		if(exposuresRAM[i] < minExp) minExp = exposuresRAM[i];
 	}
+	uint64_t totalOld = totalExps;
+	totalExps = workDone;
+	workDone -= totalOld;
 	if(UINT64_MAX == minExp) minExp = 0;
-	cout << "exposures this run: " << workDone << " total: " << totalExps + workDone << endl;
+	cout << "exposures this run: " << workDone << " total: " << totalExps << endl;
 	cout << "min=" << minExp << " max=" << maxExp << endl;
 
 #ifdef BMP_QUICKSAVE
@@ -583,7 +588,6 @@ int64_t doSome() {
 	dim3 dimGrid(n/dimBlock);
 	//cout << "dimGrid: " << out(dimGrid) << " dimBlock: " << dimBlock << endl;
 	cuConvertImage<<<dimGrid, dimBlock>>>((GLubyte*)dataPtr, (int)(dataLen/sizeof(GLubyte)), exposures, maxExp, minExp);
-	workDone++;
 
 	cuCheckErr(cudaThreadSynchronize());	// Wait for the GPU launched work to complete
 	cuCheckErr(cudaGetLastError());
@@ -600,9 +604,8 @@ int64_t doSome() {
 		destroyStuff();
 		return -1;
 	}
-	sleep(100*1000);
+	//sleep(100*1000);
 	syncGL();
-	totalExps += workDone;
 	return workDone;
 }
 
@@ -653,6 +656,10 @@ void syncGL() {
 	fps = 1/(newTime - timeNow);
 	timeNow = newTime;
 	cout << "frameTime: " << frameTime << " fps: " << fps << " wait: " << (targetFrameTime-frameTime) << "sec" << endl;
+	if(fps < 5 && XYRESMULT >=2) {
+		cout << "decreasing samples per run" << endl;
+		XYRESMULT /= 2;
+	}
 }
 
 void glfwError(int error, const char* description) {
