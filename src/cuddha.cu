@@ -3,6 +3,9 @@
 #include <boost/format.hpp>
 #include <cstring>
 #include <cstdio>
+#include <stdint.h>
+
+#include "bmp.h"
 
 #ifdef __linux__
 #include <unistd.h>
@@ -33,10 +36,14 @@ using namespace boost;
 
 static const int imgWidth = 512;
 static const int imgHeight = 512;
+static const int maxIterations = 300;
+static const int minDrawIterations = 10;
 static const int imgSize = imgWidth * imgHeight;
+static const int XYRES = 32;
+static const int XYRESMULT = 4;
 
 #define out(dim) "[x="<<dim.x<<",y="<<dim.y<<",z="<<dim.z<<"]"
-
+#define UINT64_MAX ((uint64_t)(1) << 63)
 /**
  * This macro checks return value of the CUDA runtime call and exits
  * the application if the call failed.
@@ -44,7 +51,7 @@ static const int imgSize = imgWidth * imgHeight;
 #define cuCheckErr(value) {													\
 	cudaError_t _m_cudaStat = value;										\
 	if (_m_cudaStat != cudaSuccess) {										\
-		cerr << "Error " <<_m_cudaStat << ": "								\
+		cerr << "cuda Error " <<_m_cudaStat << ": "							\
 			<< cudaGetErrorString(_m_cudaStat) << " at line " <<			\
 			__LINE__ << " in file " << __FILE__ << endl;					\
 		exit(1);															\
@@ -61,8 +68,26 @@ static inline void glCheck() {
 	}
 }
 
+__device__ uint64_t atomicAdd(uint64_t* address, uint64_t val)
+{
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+    int i = 0;
+    do {
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                        (val + assumed));
+        if(i++ > 32) {
+        	printf("exposing failed\n");
+        	break;
+        }
+
+    } while (assumed != old);
+    return old;
+}
+
 template<class T>
-__global__ void cuBrot(uint64_t* exposure, const int maxIterations) {
+__global__ void cuBrot(uint64_t* exposure, int maxIterations) {
 
 	// [0,1]
 	double xInd = (threadIdx.x + blockDim.x * blockIdx.x) / (double)(blockDim.x * gridDim.x);
@@ -71,44 +96,55 @@ __global__ void cuBrot(uint64_t* exposure, const int maxIterations) {
 	T x, y, xx, yy, xC, yC;
 
 
-	xC = xInd*6 - 3;  // range -2.0, 1.0 //old, now both -3,3
-    yC = yInd*6 - 3;  // range -1.5, 1.5
+	//xC = xInd*6 - 3;  // range -2.0, 1.0 //old, now both -3,3
+    //yC = yInd*6 - 3;  // range -1.5, 1.5
+	xC = xInd * 3 - 2;
+	yC = yInd * 3 - 1.5;
+	//printf("xC %2.5f yC %2.5f\n", xC, yC);
+
 	y = 0;
 	x = 0;
 	yy = 0; // x0 & y0 = 0, so xx0 = 0, too
 	xx = 0;
 
 	bool out = false;
-	for(int i=0;i < maxIterations && !out; i++) {
+	int i;
+	for(i=0;i < maxIterations && !out; i++) {
 		y = x * y * T(2.0) + yC;
 		x = xx - yy + xC ;
 		yy = y * y;
 		xx = x * x;
-		out = xx+yy < T(4);
+		out = xx+yy > T(10);
 	}
+	maxIterations = i+1; // only go up there
 	if(out) {
+		y = 0;
+		x = 0;
+		yy = 0; // x0 & y0 = 0, so xx0 = 0, too
+		xx = 0;
 		for(int i=0;i < maxIterations; i++) {
 			y = x * y * T(2.0) + yC;
 			x = xx - yy + xC ;
 			yy = y * y;
 			xx = x * x;
+			if (i > minDrawIterations) {
+				//double ix = 0.3 * (x+0.5) + (double)imgWidth / 2;
+				//double iy = 0.3 * y + (double)imgHeight / 2;
+				int ix = (int)(imgWidth  * ((x + 2.0) / 3.0));
+				int iy = (int)(imgHeight * ((y + 1.5) / 3.0));
 
-			double ix = 0.3 * (x+0.5) + (double)imgWidth / 2;
-			double iy = 0.3 * y + (double)imgHeight / 2;
-			unsigned int basePos = (unsigned int)(ix * imgWidth + iy * imgWidth * imgHeight);
-			if(basePos > imgSize) {
-				printf("dropping %d\n", basePos);
-				continue;
-			}
-			unsigned long long expNow = exposure[basePos], expWanted = expNow+1, expOld;
-			int c = 0;
-			do {
-				c++; if(c>10) {
-					printf("dropping %d\n", basePos);
-					break;
+				if(ix >= imgWidth || iy >= imgHeight || ix < 0 || iy < 0) {
+					//printf("dropping %3.4f, %3.4f\n", ix, iy);
+					return;//continue;
 				}
-				expOld = atomicCAS((unsigned long long*)&exposure[basePos], expNow, expWanted);
-			} while (expOld != expNow);
+				int basePos = iy + ix * imgWidth; // swap x&y
+				if (basePos >= imgSize) {
+					printf("droppingi %3.4f, %3.4f\n", ix, iy);
+					return;//continue;
+				}
+				//exposure[basePos]=255;// = i;
+				atomicAdd(&exposure[basePos], 1);
+			}
 		}
 	}
 }
@@ -130,13 +166,14 @@ __global__ void cuConvertImage(GLubyte* outImage, int len, uint64_t* exposure, u
 	}
 
 	uint64_t exp = exposure[basePos];
-	exp -= minExp;
-	float expF = exp / (float)(maxExp - minExp);
-	expF = __log10f(expF);
+	//exp -= minExp;
+	float expF = ((float)exp) / maxExp;
+	//float expF = exp / (float)(maxExp - minExp);
+	//expF = __log10f(expF);
 
-	outImage[(basePos*4) + 0] = (uint8_t)(expF);
-	outImage[(basePos*4) + 1] = (uint8_t)(expF);
-	outImage[(basePos*4) + 2] = (uint8_t)(expF);
+	outImage[(basePos*4) + 0] = (GLubyte)((float)x / (float)imgWidth);//(uint8_t)(expF);
+	outImage[(basePos*4) + 1] = (GLubyte)((float)y / (float)imgWidth);//(uint8_t)(expF);
+	outImage[(basePos*4) + 2] = (GLubyte)((float)x / (float)imgWidth);//(uint8_t)(expF);
 	outImage[(basePos*4) + 3] = 255;
 }
 
@@ -232,7 +269,7 @@ int gpuGLDeviceInit()
 bool renderImage();
 int doSome();
 void glfwError(int error, const char* description);
-void sync();
+void syncGL();
 void freeStuff();
 void destroyStuff();
 
@@ -244,6 +281,7 @@ GLuint quad_vertexbuffer;
 cudaGraphicsResource* imageCUDAName;
 uint64_t* exposures;
 uint64_t* exposuresRAM;
+GLubyte* dataBytes;
 
 double timeNow = 0;
 double targetFPS = 0.5;
@@ -374,12 +412,15 @@ int main(void) {
 	cout << "cudaMalloc "<< (sizeof(uint64_t) * imgSize / 1024) << "KB" << endl;
 	cuCheckErr(cudaMalloc((void**) &exposures, sizeof(uint64_t) * imgSize));
 	cout << "malloc" << endl;
+	cudaMemset(exposures,0,imgSize*sizeof(uint64_t));
 	exposuresRAM = new uint64_t[imgSize];
+	memset(exposuresRAM, 0, imgSize*sizeof(uint64_t));
+	dataBytes = new GLubyte[imgSize];
 
 	cuCheckErr(cudaThreadSynchronize());
 	cuCheckErr(cudaGetLastError());
 
-	sync();
+	syncGL();
 	cout << "beginning..." << endl;
 	for (int numDone = 0; numDone != -1;) {
 		numDone = doSome();
@@ -397,9 +438,9 @@ int doSome() {
 	//TODO
 	// Step 1: do some Broting
 	cout << "Broting..." << endl;
-	dim3 dimBlockBrot(32, 32);
-	dim3 dimGridBrot(1,1);
-	cuBrot<double><<<dimGridBrot, dimBlockBrot>>>(exposures, 200);
+	dim3 dimBlockBrot(XYRES, XYRES);
+	dim3 dimGridBrot(XYRESMULT,XYRESMULT);
+	cuBrot<double><<<dimGridBrot, dimBlockBrot>>>(exposures, maxIterations);
 	cuCheckErr(cudaThreadSynchronize());
 	cuCheckErr(cudaGetLastError());
 
@@ -407,12 +448,25 @@ int doSome() {
 	// Step 2: get Min/Max values of broted stuff
 	cout << "minmax..." << endl;
 	cuCheckErr(cudaMemcpy(exposuresRAM, exposures, sizeof(uint64_t) * imgSize, cudaMemcpyDeviceToHost));
-	uint64_t maxExp = 0, minExp = -1;
-	for(unsigned int i = 0; i < imgSize; i++) {
+	uint64_t maxExp = 0, minExp = UINT64_MAX;
+	for(int i = 0; i < imgSize; i++) {
 		if(exposuresRAM[i] > maxExp) maxExp = exposuresRAM[i];
 		if(exposuresRAM[i] < minExp) minExp = exposuresRAM[i];
 	}
+	if(UINT64_MAX == minExp) minExp = 0;
 	cout << "min=" << minExp << " max=" << maxExp << endl;
+
+	for(int i = 0; i < imgSize; i++) {
+		float ramp = exposuresRAM[i] / (maxExp / 2.5);
+		if (ramp > 1)  {
+			ramp = 1;
+		}
+		dataBytes[i] = (GLubyte) (ramp * 255);
+	}
+
+	char numstr[123];
+	sprintf(numstr, "frame-%d.bmp", workDone);
+	drawbmp(numstr, dataBytes, imgWidth, imgHeight);
 
 	// Step 3: convert to Image
 	cout << "convert..." << endl;
@@ -422,7 +476,7 @@ int doSome() {
 	cuCheckErr(cudaGraphicsResourceGetMappedPointer(&dataPtr, &dataLen, imageCUDAName));
 
 	if(dataLen != (imgWidth*imgHeight*4*sizeof(GLubyte))) {
-		cerr << "Error: data length expected " << (imgWidth*imgHeight*1*sizeof(GLubyte)) << ", got " << dataLen << endl;
+		cerr << "Error: data length expected " << (imgWidth*imgHeight*4*sizeof(GLubyte)) << ", got " << dataLen << endl;
 		return -1;
 	}
 	int n = imgWidth * imgHeight;
@@ -446,7 +500,7 @@ int doSome() {
 		destroyStuff();
 		return -1;
 	}
-	sync();
+	syncGL();
 	return workDone;
 }
 
@@ -481,7 +535,7 @@ bool renderImage() {
 	return !glfwWindowShouldClose(window);
 }
 
-void sync() {
+void syncGL() {
 	if(timeNow == 0) {
 		timeNow = glfwGetTime();
 		return;
@@ -506,6 +560,7 @@ void glfwError(int error, const char* description) {
 void freeStuff() {
 	cout << "freeing mems..." << endl;
 	delete[] exposuresRAM;
+	delete[] dataBytes;
 	cudaFree(exposures);
 	cudaGraphicsUnregisterResource(imageCUDAName);
 	glDeleteBuffers(1, &imageGLName);
