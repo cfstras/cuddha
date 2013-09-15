@@ -31,6 +31,9 @@ inline void sleep(int usecs) {
 #include <GL/gl.h>
 #include <GL/glu.h>
 
+#undef BMP_QUICKSAVE
+#define OPTIMISE
+
 using namespace std;
 using namespace boost;
 
@@ -40,7 +43,7 @@ static const int maxIterations = 300;
 static const int minDrawIterations = 10;
 static const int imgSize = imgWidth * imgHeight;
 static const int XYRES = 32;
-static const int XYRESMULT = 4;
+static const int XYRESMULT = 8;
 
 #define out(dim) "[x="<<dim.x<<",y="<<dim.y<<",z="<<dim.z<<"]"
 #define UINT64_MAX ((uint64_t)(1) << 63)
@@ -95,12 +98,25 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations) {
 
 	T x, y, xx, yy, xC, yC;
 
-
 	//xC = xInd*6 - 3;  // range -2.0, 1.0 //old, now both -3,3
     //yC = yInd*6 - 3;  // range -1.5, 1.5
 	xC = xInd * 3 - 2;
 	yC = yInd * 3 - 1.5;
 	//printf("xC %2.5f yC %2.5f\n", xC, yC);
+
+#ifdef OPTIMISE
+                        if (
+                           (xC >  -1.2 && xC <=  -1.1 && yC >  -0.1 && yC < 0.1)
+                        || (xC >  -1.1 && xC <=  -0.9 && yC >  -0.2 && yC < 0.2)
+                        || (xC >  -0.9 && xC <=  -0.8 && yC >  -0.1 && yC < 0.1)
+                        || (xC > -0.69 && xC <= -0.61 && yC >  -0.2 && yC < 0.2)
+                        || (xC > -0.61 && xC <=  -0.5 && yC > -0.37 && yC < 0.37)
+                        || (xC >  -0.5 && xC <= -0.39 && yC > -0.48 && yC < 0.48)
+                        || (xC > -0.39 && xC <=  0.14 && yC > -0.55 && yC < 0.55)
+                        || (xC >  0.14 && xC <   0.29 && yC > -0.42 && yC < -0.07)
+                        || (xC >  0.14 && xC <   0.29 && yC >  0.07 && yC < 0.42)
+                        ) return;
+#endif
 
 	y = 0;
 	x = 0;
@@ -152,6 +168,28 @@ __device__ float function(/*args*/) {
 	return 0;
 }
 
+__global__ void templ(GLubyte* data, int len) {
+	long int idx = threadIdx.x + blockDim.x * blockIdx.x;
+
+	long int x = idx % imgWidth;
+	long int y = idx / imgWidth;
+
+	//printf("%4ld x=%4ld y=%4ld\n",idx, x, y);
+
+	int basePos = (x+y*imgWidth)*4;
+	if(basePos+4 > len) {
+		printf("x=%d, y=%d Error: usedlen %4d > len %4d\n", x,y, basePos, len);
+		return;
+	}/* else {
+		printf("x=%d, y=%d usedlen %4d, len %4d\n", x,y, usedLen, len);
+	}*/
+
+	data[(basePos) + 0] = (uint8_t)((float)x / imgWidth * 255);
+	data[(basePos) + 1] = (uint8_t)((float)y / imgHeight * 255);
+	data[(basePos) + 2] = 0;
+	data[(basePos) + 3] = 255;
+}
+
 __global__ void cuConvertImage(GLubyte* outImage, int len, uint64_t* exposure, uint64_t maxExp, uint64_t minExp) {
 	uint32_t idx = threadIdx.x + blockDim.x * blockIdx.x;
 
@@ -165,14 +203,14 @@ __global__ void cuConvertImage(GLubyte* outImage, int len, uint64_t* exposure, u
 	}
 
 	uint64_t exp = exposure[basePos];
-	//exp -= minExp;
-	float expF = ((float)exp) / maxExp;
-	//float expF = exp / (float)(maxExp - minExp);
-	//expF = __log10f(expF);
+	exp -= minExp;
+	//float expF = ((float)exp) / maxExp;
+	float expF = exp / (float)(maxExp - minExp);
+	expF = (__logf(expF +( 0.135335 ))+2)/2.1269;
 
-	outImage[(basePos*4) + 0] = (GLubyte)((float)x / (float)imgWidth);//(uint8_t)(expF);
-	outImage[(basePos*4) + 1] = (GLubyte)((float)y / (float)imgWidth);//(uint8_t)(expF);
-	outImage[(basePos*4) + 2] = (GLubyte)((float)x / (float)imgWidth);//(uint8_t)(expF);
+	outImage[(basePos*4) + 0] = (uint8_t)(expF*255);
+	outImage[(basePos*4) + 1] = (uint8_t)(expF*255);
+	outImage[(basePos*4) + 2] = (uint8_t)(expF*255);
 	outImage[(basePos*4) + 3] = 255;
 }
 
@@ -266,7 +304,7 @@ int gpuGLDeviceInit()
 }
 
 bool renderImage();
-int doSome();
+int64_t doSome();
 void glfwError(int error, const char* description);
 void syncGL();
 void freeStuff();
@@ -281,6 +319,8 @@ cudaGraphicsResource* imageCUDAName;
 uint64_t* exposures;
 uint64_t* exposuresRAM;
 GLubyte* dataBytes;
+
+int64_t totalExps;
 
 double timeNow = 0;
 double targetFPS = 0.5;
@@ -420,8 +460,9 @@ int main(void) {
 	cuCheckErr(cudaGetLastError());
 
 	syncGL();
+	totalExps = 0;
 	cout << "beginning..." << endl;
-	for (int numDone = 0; numDone != -1;) {
+	for (int64_t numDone = 0; numDone != -1;) {
 		numDone = doSome();
 	}
 
@@ -431,10 +472,9 @@ int main(void) {
 	return 0;
 }
 
-int doSome() {
-	int workDone = 0;
+int64_t doSome() {
+	int64_t workDone = 0;
 
-	//TODO
 	// Step 1: do some Broting
 	cout << "Broting..." << endl;
 	dim3 dimBlockBrot(XYRES, XYRES);
@@ -449,12 +489,15 @@ int doSome() {
 	cuCheckErr(cudaMemcpy(exposuresRAM, exposures, sizeof(uint64_t) * imgSize, cudaMemcpyDeviceToHost));
 	uint64_t maxExp = 0, minExp = UINT64_MAX;
 	for(int i = 0; i < imgSize; i++) {
+		workDone += exposuresRAM[i];
 		if(exposuresRAM[i] > maxExp) maxExp = exposuresRAM[i];
 		if(exposuresRAM[i] < minExp) minExp = exposuresRAM[i];
 	}
 	if(UINT64_MAX == minExp) minExp = 0;
+	cout << "exposures this run: " << workDone << " total: " << totalExps + workDone << endl;
 	cout << "min=" << minExp << " max=" << maxExp << endl;
 
+#ifdef BMP_QUICKSAVE
 	for(int i = 0; i < imgSize; i++) {
 		float ramp = exposuresRAM[i] / (maxExp / 2.5);
 		if (ramp > 1)  {
@@ -466,6 +509,7 @@ int doSome() {
 	char numstr[123];
 	sprintf(numstr, "frame-%d.bmp", workDone);
 	drawbmp(numstr, dataBytes, imgWidth, imgHeight);
+#endif
 
 	// Step 3: convert to Image
 	cout << "convert..." << endl;
@@ -500,6 +544,7 @@ int doSome() {
 		return -1;
 	}
 	syncGL();
+	totalExps += workDone;
 	return workDone;
 }
 
