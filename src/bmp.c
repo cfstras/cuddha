@@ -5,6 +5,9 @@
 // or the GNU Public License, whichever you prefer:
 // November 23, 2004
 //
+// Source: http://en.wikipedia.org/wiki/User:Evercat/Buddhabrot.c
+//
+// Modifications: removed everything but the bmp output.
 
 #include "bmp.h"
 
