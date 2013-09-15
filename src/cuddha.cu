@@ -37,13 +37,13 @@ inline void sleep(int usecs) {
 using namespace std;
 using namespace boost;
 
-static const int imgWidth = 512;
-static const int imgHeight = 512;
-static const int maxIterations = 1000*1000;
-static const int minDrawIterations = 10;
+static const int imgWidth = 1024;
+static const int imgHeight = 1024;
+static const int maxIterations = 15;
+static const int minDrawIterations = 3;
 static const int imgSize = imgWidth * imgHeight;
 static const int XYRES = 32;
-static const int XYRESMULT = 1;
+static const int XYRESMULT = 8;
 
 static const int nums[] = {1,2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,
 59,61,67,71,73,79,83,89,97,101,103,107,109,113,127,131,137,139,149,151,157,163,
@@ -118,9 +118,14 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
 	xC = xInd * 3 - 2;
 	yC = yInd * 3 - 1.5;
 
+	//TODO do this prime subiteration from the middle instead of top-left
+
+	//TODO performance hint: for found orbit, mirror on x axis and try again
+
 	T xCn = (xInd+1) * 3 - 2;
 	T yCn = (yInd+1) * 3 - 1.5;
-	T xDiff = xC - xCn, yDiff = yC - yCn;
+	T xDiff = xCn - xC;
+	T yDiff = yCn - yC;
 
 	xC += ( primePosX / (float)currPrime ) * xDiff;
 	yC += ( primePosY / (float)currPrime ) * yDiff;
@@ -153,7 +158,7 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
 		x = xx - yy + xC ;
 		yy = y * y;
 		xx = x * x;
-		out = xx+yy > T(10);
+		out = xx+yy > T(4);
 	}
 	maxIterations = i+1; // only go up there
 	if(out) {
@@ -511,7 +516,7 @@ void bmp_quicksave(uint64_t maxExp) {
 	}
 
 	char numstr[123];
-	sprintf(numstr, "frame-%ld.bmp", totalExps);
+	sprintf(numstr, "frame-max%d-exp%ld.bmp", maxIterations, totalExps);
 	drawbmp(numstr, dataBytes, imgWidth, imgHeight);
 }
 
