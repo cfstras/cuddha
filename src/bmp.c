@@ -95,9 +95,7 @@ void drawbmp (char * filename, GLubyte* data, int width, int height) {
 		for (x = 0; x <= width - 1; x++)
 		{
 			color = reduce(data[x+y*width]);
-			red = color * 0.9;
-			green = color * 0.8;
-			blue = color * 1.0;
+			red = green = blue = color;
 			//red = reduce(redcount[x][y] + COLOUR_OFFSET) * red_multiplier;
 			//green = reduce(greencount[x][y] + COLOUR_OFFSET) * green_multiplier;
 			//blue = reduce(bluecount[x][y] + COLOUR_OFFSET) * blue_multiplier;
