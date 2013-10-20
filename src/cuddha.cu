@@ -34,7 +34,9 @@ inline void sleep(int usecs) {
 #include <curand_kernel.h>
 
 #define BMP_QUICKSAVE
-#define OPTIMISE
+#undef OPTIMISE
+#undef DIST_DEBUG
+#undef RANDOM_DIST
 
 using namespace std;
 using namespace boost;
@@ -137,8 +139,10 @@ template<class T>
 __global__ void cuBrot(uint64_t* exposure, int maxIterations,
 		uint currPrime, uint primePosX, uint primePosY,
 		int serial) {
+#ifdef RANDOM_DIST
 	curandState state;
 	getRand(&state, serial);
+#endif
 	// [0,1]
 	double xInd = (threadIdx.x + blockDim.x * blockIdx.x) / (double)(blockDim.x * gridDim.x);
 	double yInd = (threadIdx.y + blockDim.y * blockIdx.y) / (double)(blockDim.y * gridDim.y);
@@ -162,18 +166,22 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations,
 	xDiff = xCn - xC;
 	yDiff = yCn - yC;
 
+#ifdef RANDOM_DIST
 	xC += curand_uniform(&state) * xDiff;
 	yC += curand_uniform(&state) * yDiff;
-	//xC += ( primePosX / (float)currPrime ) * xDiff;
-	//yC += ( primePosY / (float)currPrime ) * yDiff;
-
+#else
+	xC += ( (double)primePosX / (double)currPrime ) * xDiff;
+	yC += ( (double)primePosY / (double)currPrime ) * yDiff;
+#endif
 	//printf("xC %2.5f yC %2.5f\n", xC, yC);
 
+#ifdef DIST_DEBUG
 	// yep
 	int basePos = coordToIndex<T>(xC, yC);
 	if (basePos == -1) return;
 	atomicAdd(&exposure[basePos], 1);
 	return;
+#endif
 
 #ifdef OPTIMISE
                         if (
@@ -201,7 +209,7 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations,
 		xx = x * x;
 		out = xx+yy > T(4);
 	}
-	maxIterations = i; // only go up there
+	//maxIterations = i; // only go up there
 	if(out) {
 		y = x = yy = xx = 0;
 		for(int i=1;i <= maxIterations; i++) {
