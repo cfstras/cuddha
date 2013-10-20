@@ -31,7 +31,9 @@ inline void sleep(int usecs) {
 #include <GL/gl.h>
 #include <GL/glu.h>
 
-#undef BMP_QUICKSAVE
+#include <curand_kernel.h>
+
+#define BMP_QUICKSAVE
 #define OPTIMISE
 
 using namespace std;
@@ -45,7 +47,7 @@ static const int imgSize = imgWidth * imgHeight;
 
 // total job number: XYRES*XYRES*XYRESMULT*XYRESMULT
 // job resolution: XYRES*XYRESMULT
-static int XYRES = 32;
+static int XYRES = 16;
 static int XYRESMULT = 32;
 
 static const int nums[] = {2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,
@@ -97,7 +99,7 @@ __device__ uint64_t atomicAdd(uint64_t* address, uint64_t val)
         assumed = old;
         old = atomicCAS(address_as_ull, assumed,
                         (val + assumed));
-        if(i++ > 32) {
+        if(i++ > 512) {
         	printf("exposing failed\n");
         	break;
         }
@@ -106,10 +108,44 @@ __device__ uint64_t atomicAdd(uint64_t* address, uint64_t val)
     return old;
 }
 
+template<class T>
+__device__ int coordToIndex(T x, T y) {
+	//double ix = 0.3 * (x+0.5) + (double)imgWidth / 2;
+	//double iy = 0.3 * y + (double)imgHeight / 2;
+	int ix = (int)(imgWidth  * ((x + 2.0) / 3.0));
+	int iy = (int)(imgHeight * ((y + 1.5) / 3.0));
+
+	if(ix >= imgWidth || iy >= imgHeight || ix < 0 || iy < 0) {
+		return -1;
+	}
+	int basePos = iy + ix * imgWidth; // swap x&y
+	if (basePos >= imgSize) {
+		printf("droppingi %3.4f, %3.4f\n", ix, iy);
+		return -1;
+	}
+	return basePos;
+}
+
+__device__ inline int getStateId() {
+	int x = threadIdx.x + blockDim.x * blockIdx.x;
+	int y = threadIdx.y + blockDim.y * blockIdx.y;
+	return y * gridDim.x + x;
+}
+
+__global__ void initRand(curandState *states, int max) {
+	int id = getStateId();
+	if (id > max) {
+		printf("id! %5d > %5d\n", id, max);
+		return;
+	}
+	curand_init(1234, id, 0, &states[id]);
+}
+
 #pragma unroll
 template<class T>
-__global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, uint primePosX, uint primePosY) {
-
+__global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, uint primePosX, uint primePosY, curandState *states) {
+	int id = getStateId();
+	curandState state = states[id];
 	// [0,1]
 	double xInd = (threadIdx.x + blockDim.x * blockIdx.x) / (double)(blockDim.x * gridDim.x);
 	double yInd = (threadIdx.y + blockDim.y * blockIdx.y) / (double)(blockDim.y * gridDim.y);
@@ -131,8 +167,10 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
 	xDiff = xCn - xC;
 	yDiff = yCn - yC;
 
-	xC += ( primePosX / (float)currPrime ) * xDiff;
-	yC += ( primePosY / (float)currPrime ) * yDiff;
+	xC += curand_uniform(&state) * xDiff;
+	yC += curand_uniform(&state) * yDiff;
+	//xC += ( primePosX / (float)currPrime ) * xDiff;
+	//yC += ( primePosY / (float)currPrime ) * yDiff;
 
 	//printf("xC %2.5f yC %2.5f\n", xC, yC);
 
@@ -152,6 +190,13 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
 
 	y = x = yy = xx = 0;
 	// x0 & y0 = 0, so xx0 = 0, too
+
+	// yep
+	int basePos = coordToIndex<T>(x, y);
+	if (basePos == -1) return;
+	atomicAdd(&exposure[basePos], 1);
+	states[id] = state;
+	return;
 
 	bool out = false;
 	int i;
@@ -173,48 +218,17 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
 			if (i >= minDrawIterations) {
 				//double ix = 0.3 * (x+0.5) + (double)imgWidth / 2;
 				//double iy = 0.3 * y + (double)imgHeight / 2;
-				int ix = (int)(imgWidth  * ((x + 2.0) / 3.0));
-				int iy = (int)(imgHeight * ((y + 1.5) / 3.0));
-
-				if(ix >= imgWidth || iy >= imgHeight || ix < 0 || iy < 0) {
-					return;//continue;
-				}
-				int basePos = iy + ix * imgWidth; // swap x&y
-				if (basePos >= imgSize) {
-					printf("droppingi %3.4f, %3.4f\n", ix, iy);
-					return;//continue;
+				int basePos = coordToIndex<T>(x, y);
+				if (basePos == -1) {
+					states[id] = state;
+					return;
 				}
 				//exposure[basePos]=255;// = i;
 				atomicAdd(&exposure[basePos], 1);
 			}
 		}
 	}
-}
-
-__device__ float function(/*args*/) {
-	return 0;
-}
-
-__global__ void templ(GLubyte* data, int len) {
-	long int idx = threadIdx.x + blockDim.x * blockIdx.x;
-
-	long int x = idx % imgWidth;
-	long int y = idx / imgWidth;
-
-	//printf("%4ld x=%4ld y=%4ld\n",idx, x, y);
-
-	int basePos = (x+y*imgWidth)*4;
-	if(basePos+4 > len) {
-		printf("x=%d, y=%d Error: usedlen %4d > len %4d\n", x,y, basePos, len);
-		return;
-	}/* else {
-		printf("x=%d, y=%d usedlen %4d, len %4d\n", x,y, usedLen, len);
-	}*/
-
-	data[(basePos) + 0] = (uint8_t)((float)x / imgWidth * 255);
-	data[(basePos) + 1] = (uint8_t)((float)y / imgHeight * 255);
-	data[(basePos) + 2] = 0;
-	data[(basePos) + 3] = 255;
+	states[id] = state;
 }
 
 __global__ void cuConvertImage(GLubyte* outImage, int len, uint64_t* exposure, uint64_t maxExp, uint64_t minExp) {
@@ -346,10 +360,14 @@ cudaGraphicsResource* imageCUDAName;
 uint64_t* exposures;
 uint64_t* exposuresRAM;
 GLubyte* dataBytes;
+curandState *devStates;
 
 int64_t totalExps;
 uint currPrimeInd;
 uint primePos;
+
+int dimBlock;
+dim3 dimGrid;
 
 uint64_t maxExp;
 
@@ -357,9 +375,6 @@ double timeNow = 0;
 double targetFPS = 60;
 double fps = 0;
 
-/**
- * Host function that prepares data array and passes it to the CUDA kernel.
- */
 int main(void) {
 
 	//init OGL
@@ -487,8 +502,19 @@ int main(void) {
 	memset(exposuresRAM, 0, imgSize*sizeof(uint64_t));
 	dataBytes = new GLubyte[imgSize];
 
-	cuCheckErr(cudaThreadSynchronize());
-	cuCheckErr(cudaGetLastError());
+	cuCheckErr(cudaThreadSynchronize());cuCheckErr(cudaGetLastError());
+
+	int n = imgWidth * imgHeight;
+	dimBlock = 1024;
+	dimGrid = dim3(n/dimBlock, n/dimBlock, 1);
+	int max = dimGrid.x * dimGrid.y * dimGrid.z * dimBlock;
+	cout << "cudaMalloc "<< (sizeof(curandState) * max / 1024) << "KB" << endl;
+	cudaMalloc((void **)&devStates, max * sizeof(curandState));
+	cuCheckErr(cudaThreadSynchronize());cuCheckErr(cudaGetLastError());
+
+	initRand<<<dimBlock, dimGrid>>>(devStates, max);
+
+	cuCheckErr(cudaThreadSynchronize());cuCheckErr(cudaGetLastError());
 
 	syncGL();
 	totalExps = 0;
@@ -535,6 +561,11 @@ int64_t doSome() {
 			if (currPrimeInd >= prime_numbers.size()) {
 				bmp_quicksave(maxExp);
 				return -1;
+			} else {
+#ifdef BMP_QUICKSAVE
+				bmp_quicksave(maxExp);
+#endif
+				return -1;
 			}
 			primePos = 0;
 			prime = prime_numbers[currPrimeInd];
@@ -543,10 +574,11 @@ int64_t doSome() {
 		primePosY = primePos / prime;
 	} while (primePosX == 0 || primePosY == 0); // don't iterate the edges
 
+
 	cout << "Broting prime: "<<prime << " pos " << primePos << " x " << primePosX << " y " << primePosY << endl;
 	dim3 dimBlockBrot(XYRES, XYRES);
 	dim3 dimGridBrot(XYRESMULT,XYRESMULT);
-	cuBrot<double><<<dimGridBrot, dimBlockBrot>>>(exposures, maxIterations, prime, primePosX, primePosY);
+	cuBrot<double><<<dimGridBrot, dimBlockBrot>>>(exposures, maxIterations, prime, primePosX, primePosY, devStates);
 	cuCheckErr(cudaThreadSynchronize());
 	cuCheckErr(cudaGetLastError());
 
@@ -568,10 +600,6 @@ int64_t doSome() {
 	cout << "exposures this run: " << workDone << " total: " << totalExps << endl;
 	cout << "min=" << minExp << " max=" << maxExp << endl;
 
-#ifdef BMP_QUICKSAVE
-	bmp_quicksave(maxExp);
-#endif
-
 	// Step 3: convert to Image
 	cout << "convert..." << endl;
 	size_t dataLen;
@@ -583,9 +611,6 @@ int64_t doSome() {
 		cerr << "Error: data length expected " << (imgWidth*imgHeight*4*sizeof(GLubyte)) << ", got " << dataLen << endl;
 		return -1;
 	}
-	int n = imgWidth * imgHeight;
-	int dimBlock(1024);
-	dim3 dimGrid(n/dimBlock);
 	//cout << "dimGrid: " << out(dimGrid) << " dimBlock: " << dimBlock << endl;
 	cuConvertImage<<<dimGrid, dimBlock>>>((GLubyte*)dataPtr, (int)(dataLen/sizeof(GLubyte)), exposures, maxExp, minExp);
 
