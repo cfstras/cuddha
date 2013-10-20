@@ -99,8 +99,8 @@ __device__ uint64_t atomicAdd(uint64_t* address, uint64_t val)
         assumed = old;
         old = atomicCAS(address_as_ull, assumed,
                         (val + assumed));
-        if(i++ > 512) {
-        	printf("exposing failed\n");
+        if(i++ > 32) {
+        	//printf("exposing failed\n");
         	break;
         }
 
@@ -109,7 +109,7 @@ __device__ uint64_t atomicAdd(uint64_t* address, uint64_t val)
 }
 
 template<class T>
-__device__ int coordToIndex(T x, T y) {
+__device__ inline int coordToIndex(T x, T y) {
 	//double ix = 0.3 * (x+0.5) + (double)imgWidth / 2;
 	//double iy = 0.3 * y + (double)imgHeight / 2;
 	int ix = (int)(imgWidth  * ((x + 2.0) / 3.0));
@@ -126,29 +126,24 @@ __device__ int coordToIndex(T x, T y) {
 	return basePos;
 }
 
-__device__ inline int getStateId() {
-	int x = threadIdx.x + blockDim.x * blockIdx.x;
-	int y = threadIdx.y + blockDim.y * blockIdx.y;
-	return y * gridDim.x + x;
-}
-
-__global__ void initRand(curandState *states, int max) {
-	int id = getStateId();
-	if (id > max) {
-		printf("id! %5d > %5d\n", id, max);
-		return;
-	}
-	curand_init(1234, id, 0, &states[id]);
+__device__ inline void getRand(curandState* state, int serial) {
+	long xInd = (threadIdx.x + blockDim.x * blockIdx.x);
+	long yInd = (threadIdx.y + blockDim.y * blockIdx.y) * blockDim.x;
+	curand_init(serial*31 + xInd*2 + yInd*4, 0, 0, state);
 }
 
 #pragma unroll
 template<class T>
-__global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, uint primePosX, uint primePosY, curandState *states) {
-	int id = getStateId();
-	curandState state = states[id];
+__global__ void cuBrot(uint64_t* exposure, int maxIterations,
+		uint currPrime, uint primePosX, uint primePosY,
+		int serial) {
+	curandState state;
+	getRand(&state, serial);
 	// [0,1]
 	double xInd = (threadIdx.x + blockDim.x * blockIdx.x) / (double)(blockDim.x * gridDim.x);
 	double yInd = (threadIdx.y + blockDim.y * blockIdx.y) / (double)(blockDim.y * gridDim.y);
+	double xIndn = (threadIdx.x+1 + blockDim.x * blockIdx.x) / (double)(blockDim.x * gridDim.x);
+	double yIndn = (threadIdx.y+1 + blockDim.y * blockIdx.y) / (double)(blockDim.y * gridDim.y);
 
 	T x, y, xx, yy, xC, yC, xCn, yCn, xDiff, yDiff;
 
@@ -162,8 +157,8 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
 
 	//TODO performance hint: for found orbit, mirror on x axis and try again
 
-	xCn = (xInd+1) * 3 - 2;
-	yCn = (yInd+1) * 3 - 1.5;
+	xCn = (xIndn) * 3 - 2;
+	yCn = (yIndn) * 3 - 1.5;
 	xDiff = xCn - xC;
 	yDiff = yCn - yC;
 
@@ -173,6 +168,12 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
 	//yC += ( primePosY / (float)currPrime ) * yDiff;
 
 	//printf("xC %2.5f yC %2.5f\n", xC, yC);
+
+	// yep
+	int basePos = coordToIndex<T>(xC, yC);
+	if (basePos == -1) return;
+	atomicAdd(&exposure[basePos], 1);
+	return;
 
 #ifdef OPTIMISE
                         if (
@@ -190,13 +191,6 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
 
 	y = x = yy = xx = 0;
 	// x0 & y0 = 0, so xx0 = 0, too
-
-	// yep
-	int basePos = coordToIndex<T>(x, y);
-	if (basePos == -1) return;
-	atomicAdd(&exposure[basePos], 1);
-	states[id] = state;
-	return;
 
 	bool out = false;
 	int i;
@@ -220,7 +214,6 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
 				//double iy = 0.3 * y + (double)imgHeight / 2;
 				int basePos = coordToIndex<T>(x, y);
 				if (basePos == -1) {
-					states[id] = state;
 					return;
 				}
 				//exposure[basePos]=255;// = i;
@@ -228,7 +221,6 @@ __global__ void cuBrot(uint64_t* exposure, int maxIterations, uint currPrime, ui
 			}
 		}
 	}
-	states[id] = state;
 }
 
 __global__ void cuConvertImage(GLubyte* outImage, int len, uint64_t* exposure, uint64_t maxExp, uint64_t minExp) {
@@ -360,7 +352,6 @@ cudaGraphicsResource* imageCUDAName;
 uint64_t* exposures;
 uint64_t* exposuresRAM;
 GLubyte* dataBytes;
-curandState *devStates;
 
 int64_t totalExps;
 uint currPrimeInd;
@@ -507,12 +498,6 @@ int main(void) {
 	int n = imgWidth * imgHeight;
 	dimBlock = 1024;
 	dimGrid = dim3(n/dimBlock, n/dimBlock, 1);
-	int max = dimGrid.x * dimGrid.y * dimGrid.z * dimBlock;
-	cout << "cudaMalloc "<< (sizeof(curandState) * max / 1024) << "KB" << endl;
-	cudaMalloc((void **)&devStates, max * sizeof(curandState));
-	cuCheckErr(cudaThreadSynchronize());cuCheckErr(cudaGetLastError());
-
-	initRand<<<dimBlock, dimGrid>>>(devStates, max);
 
 	cuCheckErr(cudaThreadSynchronize());cuCheckErr(cudaGetLastError());
 
@@ -531,7 +516,7 @@ int main(void) {
 	return 0;
 }
 
-void bmp_quicksave(uint64_t maxExp) {
+void bmp_quicksave(uint64_t maxExp, int primeInd) {
 	for(int i = 0; i < imgSize; i++) {
 		float ramp = exposuresRAM[i] / (maxExp / 2.5);
 		if (ramp > 1)  {
@@ -541,7 +526,7 @@ void bmp_quicksave(uint64_t maxExp) {
 	}
 
 	char numstr[123];
-	sprintf(numstr, "frame-max%d-exp%ld.bmp", maxIterations, totalExps);
+	sprintf(numstr, "frame-p%d-max%d-exp%ld.bmp", primeInd, maxIterations, totalExps);
 	drawbmp(numstr, dataBytes, imgWidth, imgHeight);
 }
 
@@ -559,12 +544,14 @@ int64_t doSome() {
 		if (primePos >= (uint)(prime*prime)) {
 			currPrimeInd++;
 			if (currPrimeInd >= prime_numbers.size()) {
-				bmp_quicksave(maxExp);
+				bmp_quicksave(maxExp, currPrimeInd);
 				return -1;
 			} else {
 #ifdef BMP_QUICKSAVE
-				bmp_quicksave(maxExp);
+				bmp_quicksave(maxExp, currPrimeInd);
 #endif
+			}
+			if (currPrimeInd == 5) {
 				return -1;
 			}
 			primePos = 0;
@@ -578,9 +565,8 @@ int64_t doSome() {
 	cout << "Broting prime: "<<prime << " pos " << primePos << " x " << primePosX << " y " << primePosY << endl;
 	dim3 dimBlockBrot(XYRES, XYRES);
 	dim3 dimGridBrot(XYRESMULT,XYRESMULT);
-	cuBrot<double><<<dimGridBrot, dimBlockBrot>>>(exposures, maxIterations, prime, primePosX, primePosY, devStates);
-	cuCheckErr(cudaThreadSynchronize());
-	cuCheckErr(cudaGetLastError());
+	cuBrot<double><<<dimGridBrot, dimBlockBrot>>>(exposures, maxIterations, prime, primePosX, primePosY, workDone+totalExps);
+	cuCheckErr(cudaThreadSynchronize()); cuCheckErr(cudaGetLastError());
 
 
 	// Step 2: get Min/Max values of broted stuff
@@ -624,7 +610,7 @@ int64_t doSome() {
 	if(!renderImage()) {
 		cout << "window close requested..." << endl;
 		//TODO save all state
-		bmp_quicksave(maxExp);
+		bmp_quicksave(maxExp, currPrimeInd);
 		freeStuff();
 		destroyStuff();
 		return -1;
